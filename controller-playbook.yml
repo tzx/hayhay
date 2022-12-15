@@ -1,0 +1,103 @@
+---
+- name: sysctl stuff
+  hosts: all
+  become: yes
+  tasks:
+    - name: Turn on ip forwarding
+      ansible.posix.sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        sysctl_set: yes
+        reload: yes
+    - name: Modprobe br_netfilter
+      community.general.modprobe:
+        name: br_netfilter
+        state: present
+    - name: bridge-nf-call-iptables to 1
+      ansible.posix.sysctl:
+        name: net.bridge.bridge-nf-call-iptables
+        value: '1'
+        sysctl_set: yes
+        reload: yes
+
+- name: Disable SWAP
+  hosts: all
+  become: yes
+  tasks:
+    - name: Turn off swap
+      shell: swapoff -a
+    - name: Disable SWAP in fstab since kubernetes can't work with swap enabled
+      replace:
+        path: /etc/fstab
+        regexp: '^([^#].*?\sswap\s+sw\s+.*)$'
+        replace: '# \1'
+
+- name: Install containerd
+  hosts: all
+  become: yes
+  tasks:
+    - name: Installing containerd
+      unarchive:
+        src: "https://github.com/containerd/containerd/releases/download/v1.6.9/containerd-1.6.9-linux-amd64.tar.gz"
+        dest: "/usr/local"
+        remote_src: yes
+    - name: Create systemd/systemd directory
+      file:
+        path: "/usr/local/lib/systemd/system"
+        state: directory
+    - name: Install containerd service
+      get_url:
+        url: "https://raw.githubusercontent.com/containerd/containerd/main/containerd.service"
+        dest: "/usr/local/lib/systemd/system/containerd.service"
+    - name: Enable containerd service
+      ansible.builtin.systemd:
+        name: containerd
+        daemon-reload: yes
+        state: started
+          # TODO: need to make config file
+          # make the config file have systemd cgroup
+    - name: Install runc
+      get_url:
+        url: "https://github.com/opencontainers/runc/releases/download/v1.1.4/runc.amd64"
+        mode: 0755
+        dest: "/usr/local/sbin/runc"
+    - name: Create cni directory
+      file:
+        path: "/opt/cni/bin"
+        mode: 0755
+        state: directory
+    - name: Install cni
+      unarchive: 
+        src: "https://github.com/containernetworking/plugins/releases/download/v1.1.1/cni-plugins-linux-amd64-v1.1.1.tgz"
+        dest: "/opt/cni/bin"
+        remote_src: yes
+
+- name: Installing kubeadm, kubelet and kubectl
+  hosts: all
+  become: yes
+  tasks:
+    - name: Update and install prereqs
+      ansible.builtin.apt:
+        pkg:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+        update_cache: yes
+    - name: Add apt signing key for kubernetes
+      ansible.builtin.apt_key:
+        url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+        state: present
+    - name: Add apt repository for kubernetes
+      ansible.builtin.apt_repository:
+        repo: deb https://apt.kubernetes.io/ kubernetes-xenial main
+        state: present
+        filename: kubernetes.list
+    - name: Install kubernetes binaries
+      ansible.builtin.apt:
+        state: present
+        update_cache: yes
+        pkg:
+          - kubelet
+          - kubeadm
+          - kubectl
